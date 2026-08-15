@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="action_confirm_allocate_wh" model="ir.actions.server">
+        <field name="name">Confirm &amp; Allocate WH</field>
+        <field name="model_id" ref="sale.model_sale_order"/>
+        <field name="state">code</field>
+        <field name="code"><![CDATA[
+for order in records:
+    auto_allocate = env.context.get("rg_auto_allocate")
+    if order.state == "sale" and not auto_allocate:
+        raise UserError("Only draft quotations can be allocated across warehouses.")
+    if order.state not in ("draft", "sale"):
+        raise UserError("Only draft quotations can be allocated across warehouses.")
+
+    warehouses = env["stock.warehouse"].sudo().search(
+        [("company_id", "=", order.company_id.id), ("active", "=", True)],
+        order="sequence, name, id",
+    ).filtered(lambda w: w.lot_stock_id and w.delivery_route_id)
+    if not warehouses:
+        raise UserError(
+            "No active warehouse with a delivery route was found for company %s."
+            % order.company_id.display_name
+        )
+
+    lines = order.order_line.filtered(
+        lambda l: not l.display_type
+        and not l.is_downpayment
+        and l.product_id.is_storable
+        and l.product_uom_id.compare(l.product_uom_qty, 0) > 0
+    )
+    routed = lines.filtered(lambda l: l.route_ids)
+    if routed:
+        raise UserError(
+            "Remove manually selected routes before using Confirm & Allocate "
+            "WH:\n\n%s" % "\n".join(routed.mapped("product_id.display_name"))
+        )
+
+    products = lines.mapped("product_id").sudo()
+    availability = {product.id: {} for product in products}
+    for warehouse in warehouses:
+        stock = products.with_context(location=warehouse.lot_stock_id.id).read(["free_qty"])
+        for values in stock:
+            availability[values["id"]][warehouse.id] = max(values.get("free_qty", 0.0), 0.0)
+
+    lines_by_product = {}
+    for line in lines:
+        lines_by_product.setdefault(line.product_id.id, []).append(line)
+
+    for product in products:
+        for line in lines_by_product.get(product.id, []):
+            original_quantity = line.product_uom_qty
+            original_subtotal = line.price_subtotal
+            remaining = original_quantity
+            allocations = {}
+            for warehouse in warehouses:
+                available_product = availability[product.id].get(warehouse.id, 0.0)
+                available_line = product.uom_id._compute_quantity(
+                    available_product, line.product_uom_id, rounding_method="DOWN"
+                )
+                quantity = min(remaining, available_line)
+                if line.product_uom_id.compare(quantity, 0) > 0:
+                    allocations[warehouse.id] = quantity
+                    remaining -= quantity
+                    availability[product.id][warehouse.id] = max(
+                        0.0,
+                        available_product
+                        - line.product_uom_id._compute_quantity(quantity, product.uom_id),
+                    )
+                if line.product_uom_id.compare(remaining, 0) <= 0:
+                    break
+
+            # Keep every shortage on the first warehouse for normal backorders.
+            first = warehouses[0]
+            allocations[first.id] = allocations.get(first.id, 0.0) + max(remaining, 0.0)
+            ordered_allocations = [
+                (warehouse, allocations[warehouse.id])
+                for warehouse in warehouses
+                if line.product_uom_id.compare(allocations.get(warehouse.id, 0.0), 0) > 0
+            ]
+            if not ordered_allocations:
+                continue
+
+            first_warehouse, first_quantity = ordered_allocations[0]
+            line.write({
+                "product_uom_qty": first_quantity,
+                "route_ids": [(6, 0, [first_warehouse.delivery_route_id.id])],
+                "x_rg_report_qty": original_quantity,
+                "x_rg_report_subtotal": original_subtotal,
+                "x_rg_allocation_technical": False,
+            })
+            for warehouse, quantity in ordered_allocations[1:]:
+                line.copy({
+                    "order_id": order.id,
+                    "product_uom_qty": quantity,
+                    "route_ids": [(6, 0, [warehouse.delivery_route_id.id])],
+                    "x_rg_allocation_technical": True,
+                    "x_rg_report_qty": 0.0,
+                    "x_rg_report_subtotal": 0.0,
+                })
+
+    if order.state == "draft":
+        order.action_confirm()
+        ]]></field>
+    </record>
+
+    <record id="action_auto_allocate_website_order" model="ir.actions.server">
+        <field name="name">Auto-allocate Website Sale</field>
+        <field name="model_id" ref="sale.model_sale_order"/>
+        <field name="state">code</field>
+        <field name="code"><![CDATA[
+website_orders = records.filtered(
+    lambda order: "website_id" in order._fields and order.website_id
+)
+if website_orders and env.context.get("send_email"):
+    env.ref(
+        "rg_sales_auto_wh_allocation_xml.action_confirm_allocate_wh"
+    ).with_context(
+        active_model="sale.order",
+        active_ids=website_orders.ids,
+        active_id=website_orders[:1].id,
+        rg_auto_allocate=True,
+    ).run()
+        ]]></field>
+    </record>
+
+    <record id="automation_auto_allocate_website_order" model="base.automation">
+        <field name="name">Auto-allocate Website Sales</field>
+        <field name="description">Allocates website orders before their confirmation creates deliveries.</field>
+        <field name="model_id" ref="sale.model_sale_order"/>
+        <field name="trigger">on_write</field>
+        <field name="filter_domain">[('state', '=', 'sale')]</field>
+        <field name="trigger_field_ids" eval="[(6, 0, [ref('sale.field_sale_order__state')])]"/>
+        <field name="action_server_ids" eval="[(6, 0, [ref('action_auto_allocate_website_order')])]"/>
+    </record>
+</odoo>
