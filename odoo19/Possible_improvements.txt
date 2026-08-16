@@ -1,7 +1,0 @@
-In the current version, when the user make manual changes on the purchase order lines, Odoo recomputes the earliest date because “purchase.order.date_planned is a stored computed field that always takes the minimum date from every order line, including fully received lines.”
-
-Possible improvements:
-- Manual purchase-order action
-- Nightly scheduled recalculation
-- Additional Purchase order line-date automation
-- Python compute override for non-SaaS installations
