@@ -16,10 +16,7 @@ Expected Arrival is changed (standard Odoo only updates the Deadline).
 2. **When a PO Line Expected Arrival is created or changed**  
    - Updates the Scheduled Date (`date`) of related open stock moves.  
    - Refreshes the PO Expected Arrival from still-open lines.  
-   This covers both the forum request  
-   (https://odoothinking.odoo.com/forum/keep-it-standard-1/update-scheduled-dates-based-on-purchase-expected-arrival-49)  
-   and the open question about manual changes on purchase order lines.
-
+   
 ### Manual
 
 Select completed or cancelled receipts → **Actions > Update Expected Arrival**.
@@ -33,7 +30,7 @@ Select completed or cancelled receipts → **Actions > Update Expected Arrival**
 
 ## Installation (pure data / XML module)
 
-1. Enable Developer Mode.
+1. Enable Developer Mode
 2. Go to **Apps → Import Module**.
 3. Upload the ZIP.
 
