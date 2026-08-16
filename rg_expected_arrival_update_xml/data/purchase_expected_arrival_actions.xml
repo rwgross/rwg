@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- ========================================================= -->
+    <!-- 1. Original: after receipt Done / Cancel                   -->
+    <!--    (untouched – keeps PO Expected Arrival from open lines) -->
+    <!-- ========================================================= -->
+    <record id="action_update_purchase_expected_arrival" model="ir.actions.server">
+        <field name="name">Update Expected Arrival</field>
+        <field name="model_id" ref="stock.model_stock_picking"/>
+        <field name="binding_model_id" ref="stock.model_stock_picking"/>
+        <field name="binding_type">action</field>
+        <field name="state">code</field>
+        <field name="code"><![CDATA[
+if records:
+    receipts = records.filtered(
+        lambda picking: picking.picking_type_code == "incoming"
+        and picking.state in ("done", "cancel")
+    )
+    if receipts:
+        orders = receipts.mapped("move_ids.purchase_line_id.order_id")
+        for order in orders:
+            open_lines = order.order_line.filtered(
+                lambda line: line.product_id
+                and not line.display_type
+                and line.product_uom_id.compare(line.qty_received, line.product_qty) < 0
+                and line.date_planned
+                and any(
+                    move.picking_id and move.picking_id.state not in ("done", "cancel")
+                    for move in line.move_ids
+                )
+            )
+            dates = open_lines.mapped("date_planned")
+            if dates:
+                expected_arrival = min(dates)
+                if order.date_planned != expected_arrival:
+                    order.write({"date_planned": expected_arrival})
+        ]]></field>
+    </record>
+
+    <record id="automation_update_purchase_expected_arrival" model="base.automation">
+        <field name="name">Expected Arrival on Receipt Closure</field>
+        <field name="model_id" ref="stock.model_stock_picking"/>
+        <field name="trigger">on_create_or_write</field>
+        <field name="trigger_field_ids" eval="[(6, 0, [ref('stock.field_stock_picking__state')])]"/>
+        <field name="filter_pre_domain">[('state', 'not in', ['done', 'cancel'])]</field>
+        <field name="filter_domain">[('state', 'in', ['done', 'cancel'])]</field>
+        <field name="action_server_ids" eval="[(4, ref('action_update_purchase_expected_arrival'))]"/>
+    </record>
+
+    <!-- ========================================================= -->
+    <!-- 2. Forum request only: line Expected Arrival → Scheduled  -->
+    <!--    Date of open moves (no header correction here)         -->
+    <!-- ========================================================= -->
+    <record id="action_sync_scheduled_date_from_line" model="ir.actions.server">
+        <field name="name">Sync Scheduled Date from Line Expected Arrival</field>
+        <field name="model_id" ref="purchase.model_purchase_order_line"/>
+        <field name="state">code</field>
+        <field name="code"><![CDATA[
+if records:
+    lines = records.filtered(lambda l: l.product_id and not l.display_type and l.date_planned)
+    for line in lines:
+        open_moves = line.move_ids.filtered(lambda m: m.state not in ("done", "cancel"))
+        if open_moves:
+            to_update = open_moves.filtered(lambda m: m.date != line.date_planned)
+            if to_update:
+                to_update.write({"date": line.date_planned})
+        ]]></field>
+    </record>
+
+    <record id="automation_sync_scheduled_date_from_line" model="base.automation">
+        <field name="name">Scheduled Date on Line Expected Arrival Change</field>
+        <field name="model_id" ref="purchase.model_purchase_order_line"/>
+        <field name="trigger">on_create_or_write</field>
+        <field name="trigger_field_ids" eval="[(6, 0, [ref('purchase.field_purchase_order_line__date_planned')])]"/>
+        <field name="filter_domain">[('order_id.state', 'in', ['purchase', 'done']), ('display_type', '=', False)]</field>
+        <field name="action_server_ids" eval="[(4, ref('action_sync_scheduled_date_from_line'))]"/>
+    </record>
+</odoo>
